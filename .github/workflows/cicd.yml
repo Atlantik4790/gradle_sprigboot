@@ -6,8 +6,7 @@ on:
     branches: [main]
 
 env:
-  IMAGE_NAME: myorg/springboot-app
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/gradle-springboot
 
 jobs:
   build-test:
@@ -48,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Semgrep SAST
         uses: returntocorp/semgrep-action@v1
         with:
@@ -57,22 +57,22 @@ jobs:
     needs: build-test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: OWASP Dependency Check
-      continue-on-error: true
-      uses: dependency-check/Dependency-Check_Action@main
-      with:
-        project: 'springboot-app'
-        format: 'HTML'
+      - name: OWASP Dependency Check
+        continue-on-error: true
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'springboot-app'
+          format: 'HTML'
 
-    - name: Upload Dependency Check Report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: dep-check-report
-        path: reports/
-        if-no-files-found: warn
+      - name: Upload Dependency Check Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dep-check-report
+          path: reports/
+          if-no-files-found: warn
 
   docker-build-scan-push:
     needs: [sast-scan, dependency-scan]
@@ -80,30 +80,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS creds
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Login to ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build image
-        run: docker build -t $ECR_REGISTRY/$IMAGE_NAME:${{ github.sha }} .
+        run: docker build -t $IMAGE_NAME:${{ github.sha }} .
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}'
+          image-ref: '${{ env.IMAGE_NAME }}:${{ github.sha }}'
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
 
       - name: Push image
-        run: docker push $ECR_REGISTRY/$IMAGE_NAME:${{ github.sha }}
+        run: docker push $IMAGE_NAME:${{ github.sha }}
 
   deploy:
     needs: docker-build-scan-push
@@ -116,10 +111,10 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script: |
-            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
-            docker pull ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' -p '${{ secrets.DOCKERHUB_TOKEN }}'
+            docker pull ${{ env.IMAGE_NAME }}:${{ github.sha }}
             docker stop springboot-app || true
             docker rm springboot-app || true
             docker run -d --name springboot-app -p 80:8080 \
               -e SPRING_DATASOURCE_PASSWORD='${{ secrets.DB_PASSWORD }}' \
-              ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+              ${{ env.IMAGE_NAME }}:${{ github.sha }}
